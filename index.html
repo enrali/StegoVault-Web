@@ -274,14 +274,15 @@
                 setStatus("Reading file...");
                 decryptBtn.disabled = true;
                 
-                const file = fileInput.files[0];
                 let imageSource = file;
                 
                 // Read buffer to detect whether it is a ZIP archive
                 const fileBuffer = await file.arrayBuffer();
                 const firstBytes = new Uint8Array(fileBuffer, 0, Math.min(4, fileBuffer.byteLength));
-                const isZip = file.name.toLowerCase().endsWith('.zip') || 
-                              file.type.includes('zip') ||
+                const fileName = (file.name || '').toLowerCase();
+                const fileType = (file.type || '').toLowerCase();
+                const isZip = fileName.endsWith('.zip') || 
+                              fileType.includes('zip') ||
                               (firstBytes.length >= 4 && firstBytes[0] === 0x50 && firstBytes[1] === 0x4B && 
                                (firstBytes[2] === 0x03 || firstBytes[2] === 0x05 || firstBytes[2] === 0x07));
                 
@@ -325,10 +326,14 @@
                 let bitmap;
                 try {
                     bitmap = await createImageBitmap(imageSource, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-                } catch (imgErr) {
-                    setStatus("Could not decode image: " + imgErr.message);
-                    decryptBtn.disabled = false;
-                    return;
+                } catch (optErr) {
+                    try {
+                        bitmap = await createImageBitmap(imageSource);
+                    } catch (imgErr) {
+                        setStatus("Could not decode image: " + imgErr.message);
+                        decryptBtn.disabled = false;
+                        return;
+                    }
                 }
                 
                 const canvas = document.createElement('canvas');
