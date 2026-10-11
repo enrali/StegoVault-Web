@@ -6,9 +6,11 @@
     <title>StegoVault Web Decryptor</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #1a1a1a; color: #fff; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
-        .container { background: #2d2d2d; padding: 2rem; border-radius: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.5); max-width: 500px; width: 100%; }
+        .container { background: #2d2d2d; padding: 2rem; border-radius: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.5); max-width: 500px; width: 100%; transition: border-color 0.2s ease, background 0.2s ease; border: 2px dashed transparent; }
+        .container.dragover { border-color: #4CAF50; background: #353535; }
         h1 { margin-top: 0; color: #4CAF50; text-align: center; }
         input[type="file"], input[type="password"] { width: 100%; margin-bottom: 1rem; padding: 0.8rem; box-sizing: border-box; background: #1a1a1a; border: 1px solid #444; color: white; border-radius: 6px; }
+        #fileInfo { margin-top: -0.5rem; margin-bottom: 1rem; padding: 0.6rem 0.8rem; background: #1f1f1f; border-left: 3px solid #4CAF50; border-radius: 6px; font-size: 0.85rem; color: #ddd; word-break: break-all; display: none; }
         button { width: 100%; padding: 1rem; background: #4CAF50; color: white; border: none; border-radius: 6px; font-size: 1.1rem; cursor: pointer; font-weight: bold; }
         button:hover { background: #45a049; }
         button:disabled { background: #555; cursor: not-allowed; }
@@ -19,12 +21,13 @@
     </style>
 </head>
 <body>
-    <div class="container">
+    <div class="container" id="dropZone">
         <h1>StegoVault Decryptor</h1>
         <p style="text-align: center; font-size: 0.9em; color: #aaa;">Zero-Knowledge: All decryption happens locally in your browser.</p>
-        <input type="file" id="imageInput" accept="image/png, image/jpeg, image/bmp">
+        <input type="file" id="imageInput" accept="image/png, image/jpeg, image/bmp, .zip, application/zip, application/x-zip-compressed">
+        <div id="fileInfo"></div>
         <input type="password" id="passwordInput" placeholder="Enter secret key">
-        <button id="decryptBtn">Decrypt Image</button>
+        <button id="decryptBtn">Decrypt</button>
         <div id="status"></div>
         <div id="output"></div>
     </div>
@@ -164,18 +167,101 @@
         const statusEl = document.getElementById('status');
         const outputEl = document.getElementById('output');
         const decryptBtn = document.getElementById('decryptBtn');
+        const fileInput = document.getElementById('imageInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const fileInfoEl = document.getElementById('fileInfo');
+        const dropZone = document.getElementById('dropZone');
+        let preloadedFile = null;
 
         function setStatus(msg) {
             statusEl.textContent = msg;
         }
 
+        function setLoadedFile(file) {
+            preloadedFile = file;
+            if (fileInfoEl) {
+                const sizeStr = file.size > 1048576 
+                    ? (file.size / 1048576).toFixed(2) + ' MB' 
+                    : (file.size / 1024).toFixed(1) + ' KB';
+                fileInfoEl.innerHTML = `📄 <strong>Loaded:</strong> ${file.name} <span style="color:#888;">(${sizeStr})</span>`;
+                fileInfoEl.style.display = 'block';
+            }
+            try {
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                fileInput.files = dt.files;
+            } catch (e) {}
+        }
+
+        function base64ToUint8Array(base64Str) {
+            try {
+                base64Str = decodeURIComponent(base64Str);
+            } catch (e) {}
+            base64Str = base64Str.replace(/\s/g, '');
+            base64Str = base64Str.replace(/-/g, '+').replace(/_/g, '/');
+            while (base64Str.length % 4) {
+                base64Str += '=';
+            }
+            const binary = atob(base64Str);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes;
+        }
+
+        async function checkUrlParameters() {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                let hashParams = new URLSearchParams();
+                if (window.location.hash && window.location.hash.length > 1) {
+                    hashParams = new URLSearchParams(window.location.hash.substring(1));
+                }
+
+                const fileUrl = urlParams.get('file') || urlParams.get('url') || hashParams.get('file') || hashParams.get('url');
+                const base64Data = hashParams.get('data') || hashParams.get('zip') || urlParams.get('data') || urlParams.get('zip');
+                const customName = urlParams.get('name') || hashParams.get('name');
+
+                if (fileUrl) {
+                    setStatus("Loading file from URL...");
+                    const res = await fetch(fileUrl);
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status} while fetching file`);
+                    }
+                    const blob = await res.blob();
+                    const fileName = customName || fileUrl.split('/').pop().split('?')[0] || 'vault-payload';
+                    setLoadedFile(new File([blob], fileName, { type: blob.type }));
+                    setStatus(`File "${fileName}" loaded from link. Enter secret key to decrypt.`);
+                    passwordInput.focus();
+                } else if (base64Data) {
+                    setStatus("Loading file from parameter...");
+                    let cleanB64 = base64Data;
+                    if (cleanB64.startsWith('data:')) {
+                        const idx = cleanB64.indexOf(',');
+                        if (idx !== -1) cleanB64 = cleanB64.slice(idx + 1);
+                    }
+                    const bytes = base64ToUint8Array(cleanB64);
+                    const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B;
+                    const fileName = customName || (isZip ? 'vault.zip' : 'image.png');
+                    const mimeType = isZip ? 'application/zip' : 'image/png';
+                    
+                    setLoadedFile(new File([bytes], fileName, { type: mimeType }));
+                    setStatus(`File "${fileName}" loaded from parameter. Enter secret key to decrypt.`);
+                    passwordInput.focus();
+                }
+            } catch (err) {
+                console.error(err);
+                setStatus("Could not load file from URL: " + err.message);
+            }
+        }
+
         decryptBtn.addEventListener('click', async () => {
             try {
-                const fileInput = document.getElementById('imageInput');
-                const password = document.getElementById('passwordInput').value;
+                const password = passwordInput.value;
+                const file = (fileInput.files && fileInput.files.length > 0) ? fileInput.files[0] : preloadedFile;
                 
-                if (fileInput.files.length === 0) {
-                    setStatus("Please select an image first.");
+                if (!file) {
+                    setStatus("Please select an image or ZIP file first.");
                     return;
                 }
                 if (!password) {
@@ -185,11 +271,65 @@
                 
                 outputEl.style.display = 'none';
                 outputEl.innerHTML = '';
-                setStatus("Reading image...");
+                setStatus("Reading file...");
                 decryptBtn.disabled = true;
                 
                 const file = fileInput.files[0];
-                const bitmap = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+                let imageSource = file;
+                
+                // Read buffer to detect whether it is a ZIP archive
+                const fileBuffer = await file.arrayBuffer();
+                const firstBytes = new Uint8Array(fileBuffer, 0, Math.min(4, fileBuffer.byteLength));
+                const isZip = file.name.toLowerCase().endsWith('.zip') || 
+                              file.type.includes('zip') ||
+                              (firstBytes.length >= 4 && firstBytes[0] === 0x50 && firstBytes[1] === 0x4B && 
+                               (firstBytes[2] === 0x03 || firstBytes[2] === 0x05 || firstBytes[2] === 0x07));
+                
+                if (isZip) {
+                    setStatus("Unpacking ZIP archive...");
+                    const unzipped = fflate.unzipSync(new Uint8Array(fileBuffer));
+                    
+                    // Filter out directories and metadata files (such as __MACOSX)
+                    const fileNames = Object.keys(unzipped).filter(name => !name.endsWith('/') && !name.includes('__MACOSX'));
+                    if (fileNames.length === 0) {
+                        setStatus("No files found inside the ZIP archive.");
+                        decryptBtn.disabled = false;
+                        return;
+                    }
+                    
+                    // Find an image file or use the single file inside the archive
+                    const targetFileName = fileNames.find(name => /\.(png|jpe?g|bmp)$/i.test(name)) || fileNames[0];
+                    const imageBytes = unzipped[targetFileName];
+                    
+                    let mimeType = 'image/png';
+                    if (imageBytes.length >= 4) {
+                        if (imageBytes[0] === 0x89 && imageBytes[1] === 0x50 && imageBytes[2] === 0x4E && imageBytes[3] === 0x47) {
+                            mimeType = 'image/png';
+                        } else if (imageBytes[0] === 0xFF && imageBytes[1] === 0xD8 && imageBytes[2] === 0xFF) {
+                            mimeType = 'image/jpeg';
+                        } else if (imageBytes[0] === 0x42 && imageBytes[1] === 0x4D) {
+                            mimeType = 'image/bmp';
+                        } else if (/\.jpe?g$/i.test(targetFileName)) {
+                            mimeType = 'image/jpeg';
+                        } else if (/\.bmp$/i.test(targetFileName)) {
+                            mimeType = 'image/bmp';
+                        }
+                    }
+                    
+                    imageSource = new Blob([imageBytes], { type: mimeType });
+                    setStatus(`Extracted ${targetFileName} from ZIP. Reading image...`);
+                } else {
+                    setStatus("Reading image...");
+                }
+                
+                let bitmap;
+                try {
+                    bitmap = await createImageBitmap(imageSource, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+                } catch (imgErr) {
+                    setStatus("Could not decode image: " + imgErr.message);
+                    decryptBtn.disabled = false;
+                    return;
+                }
                 
                 const canvas = document.createElement('canvas');
                 canvas.width = bitmap.width;
@@ -284,6 +424,66 @@
                 decryptBtn.disabled = false;
             }
         });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                setLoadedFile(fileInput.files[0]);
+            }
+        });
+
+        passwordInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                decryptBtn.click();
+            }
+        });
+
+        if (dropZone) {
+            ['dragenter', 'dragover'].forEach(name => {
+                dropZone.addEventListener(name, (e) => {
+                    e.preventDefault();
+                    dropZone.classList.add('dragover');
+                });
+            });
+            ['dragleave', 'drop'].forEach(name => {
+                dropZone.addEventListener(name, (e) => {
+                    e.preventDefault();
+                    dropZone.classList.remove('dragover');
+                });
+            });
+            dropZone.addEventListener('drop', (e) => {
+                if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+                    setLoadedFile(e.dataTransfer.files[0]);
+                    setStatus(`Loaded "${e.dataTransfer.files[0].name}". Enter secret key to decrypt.`);
+                    passwordInput.focus();
+                }
+            });
+        }
+
+        window.addEventListener('paste', (e) => {
+            if (e.clipboardData && e.clipboardData.files.length > 0) {
+                setLoadedFile(e.clipboardData.files[0]);
+                setStatus(`Loaded pasted file "${e.clipboardData.files[0].name}". Enter secret key to decrypt.`);
+                passwordInput.focus();
+            }
+        });
+
+        window.addEventListener('message', (e) => {
+            if (!e.data) return;
+            let f = e.data.file;
+            if (!f && typeof e.data.data === 'string') {
+                const bytes = base64ToUint8Array(e.data.data);
+                f = new File([bytes], e.data.name || 'received-file', { type: e.data.type || 'application/octet-stream' });
+            } else if (f instanceof ArrayBuffer || f instanceof Uint8Array) {
+                f = new File([f], e.data.name || 'received-file', { type: e.data.type || 'application/octet-stream' });
+            }
+            if (f) {
+                setLoadedFile(f);
+                setStatus(`Received "${f.name}". Enter secret key to decrypt.`);
+                passwordInput.focus();
+            }
+        });
+
+        checkUrlParameters();
     </script>
 </body>
 </html>
